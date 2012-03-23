@@ -150,7 +150,7 @@ function dump() {
 `lib.js`:
 
 ```javascript
-#import build_date
+// #import build_date
 
 window.getBuildDate = function () {
     alert('This library was built on ' + build_date);
