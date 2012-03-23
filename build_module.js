@@ -14,6 +14,14 @@ function repr() {
     console.log.apply(console, [].map.call(arguments, JSON.stringify));
 }
 
+/**
+ * Map commands found in source string to function calls
+ *
+ * @param {String} source
+ * @param {Function} callback   Callback function with command name and args
+ *  arguments. Result of this function gets inserted in place of command.
+ * @return {String}
+ */
 function mapCommands(source, callback) {
     return source.replace(COMMAND_PATTERN, function (source_value, match_1, match_2) {
         var match = COMMAND_ARGS_PATTERN.exec(match_1 || match_2),
@@ -27,18 +35,37 @@ function mapCommands(source, callback) {
     });
 };
 
+/**
+ * Creates ImportError exception instance. Thrown when imported module cannot be found.
+ *
+ * @constructor
+ * @param {String} module_name Name of module which cannot be found.
+ */
 function ImportError(module_name) {
     this.message = "Module '" + module_name + "' not found";
 }
 util.inherits(ImportError, Error);
 ImportError.prototype.name = 'ImportError';
 
+/**
+ * Creates RecursiveImportError exception instance. Thrown on recursive imports.
+ *
+ * @constructor
+ * @param {String[]} stack Import stack.
+ */
 function RecursiveImportError(stack) {
     this.message = "Recursive imports are not allowed (" + stack.join(' -> ') + ")";
 }
 util.inherits(RecursiveImportError, ImportError);
 RecursiveImportError.prototype.name = 'RecursiveImportError';
 
+/**
+ * Creates AbstractModule instance.
+ *
+ * @constructor
+ * @param {String} [filename] Module filename.
+ * @param {String} [name]     Module name.
+ */
 function AbstractModule(filename, name) {
     this.filename = filename;
     this.name = name;
@@ -48,11 +75,25 @@ function AbstractModule(filename, name) {
     }
 };
 
+/**
+ * Creates Module instance.
+ *
+ * @constructor
+ * @param {String} source   Module source.
+ * @param {String} [filename] Module filename.
+ * @param {String} [name]     Module name.
+ */
 function Module(source, filename, name) {
     AbstractModule.call(this, filename, name);
     this.source = source;
 }
 
+/**
+ * Builds module and sets body and imports properties.
+ *
+ * @param {ModuleBuilder} builder Module builder which resolves imports.
+ * @param {String[]} [stack]      Stack for detecting import recursion.
+ */
 Module.prototype.build = function (builder, stack) {
     var imports = this.imports = [];
 
@@ -72,6 +113,13 @@ Module.prototype.build = function (builder, stack) {
     });
 };
 
+/**
+ * Creates ExportedModule instance.
+ *
+ * @constructor
+ * @param {String} filename Module filename.
+ * @param {String} name     Module name.
+ */
 function ExportedModule(filename, name) {
     AbstractModule.call(this, filename, name);
 
@@ -82,11 +130,21 @@ function ExportedModule(filename, name) {
     this.dump = sandbox.dump;
 }
 
+/**
+ * Builds module and sets body and imports properties.
+ */
 ExportedModule.prototype.build = function () {
     this.imports = [];
     this.body = this.dump();
 }
 
+/**
+ * Normalizes module names to absolute names.
+ *
+ * @param {String} basename Parent module absolute name.
+ * @param {String} name     Module name.
+ * @return {String}         Module absolute name.
+ */
 Module.normalizeName = function (basename, name) {
     if (name.substr(0, 1) === '.') {
         if (basename) {
@@ -99,6 +157,13 @@ Module.normalizeName = function (basename, name) {
     return name;
 };
 
+/**
+ * Loads module
+ *
+ * @param {String} folder       Library folder.
+ * @param {String} module_name  Module name.
+ * @return {Module|ExportedModule}  Module object.
+ */
 Module.load = function (folder, module_name) {
     var module_subpath = module_name.split('.'),
         module_location = folder,
@@ -131,6 +196,12 @@ Module.load = function (folder, module_name) {
     throw new ImportError(module_name);
 };
 
+/**
+ * Creates ModuleBuilder instance.
+ *
+ * @class Module builder is a stream which can be written and imports resolver.
+ * @param {String} folder   Library folder.
+ */
 function ModuleBuilder(folder) {
     this.folder = folder;
     this.buffer = [];
@@ -139,14 +210,28 @@ function ModuleBuilder(folder) {
 }
 
 ModuleBuilder.prototype = {
+    /**
+     * Writes to a stream.
+     */
     write: function () {
         [].push.apply(this.buffer, arguments);
     },
 
+    /**
+     * Dumps written data.
+     *
+     * @returns {String}    Data written to a stream.
+     */
     dump: function () {
         return this.buffer.join('');
     },
 
+    /**
+     * Writes immediately-invoked function expression (IIFE) to a stream.
+     *
+     * @param {Object[]} imports    List of function arguments.
+     * @param {Function} body_builder    Function which builds function body.
+     */
     writeIIFE: function (imports, body_builder) {
         if (arguments.length === 1) {
             body_builder = imports;
@@ -159,7 +244,7 @@ ModuleBuilder.prototype = {
            ') {\n'
         );
 
-        body_builder();
+        body_builder.call(this);
 
         this.write(
             '\n}(',
@@ -168,9 +253,15 @@ ModuleBuilder.prototype = {
         );
     },
 
+    /**
+     * Loads and writes Module to a stream.
+     *
+     * @param {String} module_name  Module absolute name.
+     * @param {String[]} stack      Module import stack.
+     * @returns {Object} Module export (alias and varname).
+     */
     writeModule: function (module_name, stack) {
-        var that = this,
-            module = Module.load(this.folder, module_name),
+        var module = Module.load(this.folder, module_name),
             varname;
 
         module.build(this, stack.concat(module_name));
@@ -182,7 +273,7 @@ ModuleBuilder.prototype = {
         );
 
         this.writeIIFE(module.imports, function () {
-            that.write(
+            this.write(
                 module.body, '\n',
                 'if (typeof ', module.alias, ' !== \'undefined\') { return ', module.alias, ' }'
             );
@@ -191,6 +282,13 @@ ModuleBuilder.prototype = {
         return {alias: module.alias, varname: varname};
     },
 
+    /**
+     * Resolves import directive.
+     *
+     * @param {String} module_name  Module name.
+     * @param {String[]} stack      Module import stack.
+     * @returns {Object} Module export.
+     */
     resolveImport: function (module_name, stack) {
         var module_export;
 
@@ -213,6 +311,13 @@ ModuleBuilder.prototype = {
     }
 };
 
+/**
+ * Builds library.
+ *
+ * @param {String} source   Library source.
+ * @param {String} folder   Library folder.
+ * @return {String} Library dump.
+ */
 function build(source, folder) {
     var builder = new ModuleBuilder(folder);
         module = new Module(source);
@@ -236,6 +341,9 @@ function build(source, folder) {
     return builder.dump();
 }
 
+/**
+ * Builds library from stdin.
+ */
 exports.buildStdin = function () {
     process.stdin.setEncoding(ENCODING);
     process.stdin
@@ -246,12 +354,17 @@ exports.buildStdin = function () {
             process.exit();
         })
         .resume();
-}
+};
 
+/**
+ * Builds library from file.
+ *
+ * @param {String} filename   Library filename.
+ */
 exports.buildFile = function (filename) {
     process.stdout.write(
        build(fs.readFileSync(filename, ENCODING), path.dirname(filename))
     );
-}
+};
 
-exports.buildFile('test/root.js');
+exports.buildStdin();
